@@ -166,7 +166,7 @@ class CRM_Accountsync_BAO_AccountInvoice extends CRM_Accountsync_DAO_AccountInvo
       ";
     $dao = CRM_Core_DAO::executeQuery($sql);
     while ($dao->fetch()) {
-      civicrm_api3('contribution', 'completetransaction', array('id' => $dao->contribution_id));
+      civicrm_api3('contribution', 'completetransaction', array('id' => $dao->contribution_id, 'is_email_receipt' => FALSE));
     }
   }
 
