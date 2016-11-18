@@ -160,13 +160,12 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
         _accountsync_create_account_contact($contactID, in_array($objectName, $createEntities), $connector_id);
       }
     }
-
     if (in_array($objectName, $invoiceEntities)) {
       $contribution_id = ($objectName == 'LineItem') ? (is_array($objectRef) ? $objectRef['contribution_id'] : $objectRef->contribution_id) : $objectRef->id;
       if (isBeforeDayZero($objectName, $objectRef, $contribution_id, $invoiceDayZero)) {
         return;
       }
-      if (in_array($objectRef->payment_processor, $skipInvoiceEntities)) {
+      if ($objectRef->payment_processor && in_array($objectRef->payment_processor, $skipInvoiceEntities)) {
         return;
       }
       $pushEnabledStatuses = Civi::settings()->get('account_sync_push_contribution_status');
