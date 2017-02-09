@@ -336,7 +336,7 @@ function _accountsync_get_invoice_create_entities($connector_id) {
  *
  * @throws \CiviCRM_API3_Exception
  */
-function _accountsync_get_skip_invoice_create_entities($connector_id) {
+function _accountsync_get_skip_invoice_create_entities($connector_id = 0) {
   $entities = _accountsync_get_entity_action_settings($connector_id);
   $skipEntities = CRM_Utils_Array::value('account_sync_skip_inv_by_pymt_processor', $entities, array());
   return $skipEntities;
