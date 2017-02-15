@@ -1,25 +1,31 @@
 (function(angular, $, _) {
 
   angular.module('accountsync').config(function($routeProvider) {
-      $routeProvider.when('/accounts/contact/sync', {
+      $routeProvider.when('/accounts/contact/sync/:plugin?', {
         controller: 'AccountsyncEditCtrl',
         templateUrl: '~/accountsync/EditCtrl.html',
 
         // If you need to look up data when opening the page, list it out
         // under "resolve".
         resolve: {
-          suggestions: function(crmApi) {
+          suggestions: function(crmApi,$route) {
+
+            var plugin = ((typeof $route.current.params.plugin != 'undefined' && $route.current.params.plugin !== null)? $route.current.params.plugin : 'xero');
+
             return crmApi('AccountContact', 'getsuggestions', {
-              plugin: 'xero',
+              plugin: plugin,
               do_not_sync: 0,
               contact_id: {'IS NULL' : 1},
               'sequential' : 1,
               'options' : {'limit' : 10}
             });
           },
-          totalCount: function(crmApi) {
+          totalCount: function(crmApi,$route) {
+
+            var plugin = ((typeof $route.current.params.plugin != 'undefined' && $route.current.params.plugin !== null)? $route.current.params.plugin : 'xero');
+
             return crmApi('AccountContact', 'getcount', {
-              plugin: 'xero',
+              plugin: plugin,
               do_not_sync: 0,
               contact_id: {'IS NULL' : 1}
             });
@@ -33,16 +39,19 @@
   //   $scope -- This is the set of variables shared between JS and HTML.
   //   crmApi, crmStatus, crmUiHelp -- These are services provided by civicrm-core.
   //   accountContacts -- The current account contacts, defined above in config().
-  angular.module('accountsync').controller('AccountsyncEditCtrl', function($scope, crmApi, crmStatus, crmUiHelp, suggestions, totalCount) {
+  angular.module('accountsync').controller('AccountsyncEditCtrl', function($scope, crmApi, crmStatus, crmUiHelp, suggestions, totalCount, $routeParams) {
     // The ts() and hs() functions help load strings for this module.
     var ts = $scope.ts = CRM.ts('accountsync');
     var hs = $scope.hs = crmUiHelp({file: 'CRM/accountsync/EditCtrl'}); // See: templates/CRM/accountsync/EditCtrl.hlp
+
+    var plugin = ((typeof $routeParams.plugin != 'undefined' && $routeParams.plugin !== null)? $routeParams.plugin : 'xero');
 
     // We have accountContact available in JS. We also want to reference it in HTML.
     $scope.accountContacts = suggestions.values;
     $scope.totalCount = totalCount.result;
 
       $scope.save = function save(accountContact) {
+
         accountContact['accounts_data']['civicrm_formatted']['contact_type'] = 'Individual';
         switch (accountContact['suggestion']) {
           case 'do_not_sync':
@@ -52,7 +61,7 @@
                   id: accountContact.id,
                   do_not_sync: 1,
                   contact_id: accountContact.contact_id,
-                  plugin: 'xero'
+                  plugin: plugin
                 }).then(function(apiResult) {
                   $scope.removeItem($scope.accountContacts, accountContact);
                   $scope.totalCount--;
@@ -77,6 +86,36 @@
               contactCreateParams['organization_name'] = contactCreateParams['display_name'];
             }
             contactCreateParams['api.AccountContact.create'] = {'id' : accountContact['id']};
+
+            //bug fix: in some CiviCRM versions (like 4.7.x) we can only chain api call to create phone, address and email while creating a new contact.
+            var address_fields_map = ["street_address","city","postal_code"];
+            var address_fields_to_create = {};
+
+
+            for (var index in address_fields_map){
+                  if(address_fields_map[index] in  contactCreateParams){
+                    address_fields_to_create[address_fields_map[index]] = contactCreateParams[address_fields_map[index]];
+
+                    delete contactCreateParams[address_fields_map[index]];
+                  }
+            }
+
+            if( Object.keys(address_fields_to_create).length > 0){
+              address_fields_to_create["location_type_id"] = "Home";
+              contactCreateParams["api.Address.create"] = address_fields_to_create;
+            }
+
+            if( "phone" in contactCreateParams){
+              contactCreateParams["api.Phone.create"] = {"phone":contactCreateParams["phone"]};
+              delete contactCreateParams["phone"];
+            }
+
+            if( "email" in contactCreateParams){
+              contactCreateParams["api.Email.create"] = {"email":contactCreateParams["email"]};
+              delete contactCreateParams["email"];
+            }
+
+
             var success = crmStatus(
               {start: ts('Saving...'), success: ts('Saved')},
                 crmApi('Contact', 'create', contactCreateParams)
@@ -109,7 +148,7 @@
 
       var nextContact = crmApi('AccountContact', 'getsuggestions', {
           'id' : {'>' : $scope.accountContacts[$scope.accountContacts.length -1]['id']},
-          'plugin' : 'xero',
+          'plugin' : plugin,
           'options' : {'limit' : 1},
           'sequential' : 1
         }
