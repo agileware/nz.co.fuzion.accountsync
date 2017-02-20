@@ -77,6 +77,37 @@
               contactCreateParams['organization_name'] = contactCreateParams['display_name'];
             }
             contactCreateParams['api.AccountContact.create'] = {'id' : accountContact['id']};
+
+            // CiviCRM 4.7 does not assign address details through Contact.create.
+	    // Instead chain api calls to create phone, address and email while creating a new contact.
+            var address_fields_map = ["street_address","city","postal_code"];
+            var address_fields_to_create = {};
+
+	    // Address fields
+            for (var index in address_fields_map){
+              if(address_fields_map[index] in contactCreateParams){
+                address_fields_to_create[address_fields_map[index]] = contactCreateParams[address_fields_map[index]];
+                delete contactCreateParams[address_fields_map[index]];
+              }
+            }
+
+            if(Object.keys(address_fields_to_create).length > 0){
+              address_fields_to_create.location_type_id = 'Billing';
+              contactCreateParams["api.Address.create"] = address_fields_to_create;
+            }
+
+            //  Phone field
+	    if("phone" in contactCreateParams){
+              contactCreateParams["api.Phone.create"] = {phone: contactCreateParams["phone"]};
+              delete contactCreateParams["phone"];
+            }
+
+	    // Email field
+            if("email" in contactCreateParams){
+              contactCreateParams["api.Email.create"] = {email: contactCreateParams["email"]};
+              delete contactCreateParams["email"];
+            }
+
             var success = crmStatus(
               {start: ts('Saving...'), success: ts('Saved')},
                 crmApi('Contact', 'create', contactCreateParams)
