@@ -1,5 +1,7 @@
 (function(angular, $, _) {
 
+  // To allow for multiple plugins, pass the plugin used as a parameter.
+  // Default is xero for legacy reasons.
   angular.module('accountsync').config(function($routeProvider) {
       $routeProvider.when('/accounts/contact/sync/:plugin?', {
         controller: 'AccountsyncEditCtrl',
@@ -8,9 +10,9 @@
         // If you need to look up data when opening the page, list it out
         // under "resolve".
         resolve: {
-          suggestions: function(crmApi,$route) {
+          suggestions: function(crmApi, $route) {
 
-            var plugin = ((typeof $route.current.params.plugin != 'undefined' && $route.current.params.plugin !== null)? $route.current.params.plugin : 'xero');
+            var plugin = ('plugin' in $route.current.params)? $route.current.params.plugin: 'xero';
 
             return crmApi('AccountContact', 'getsuggestions', {
               plugin: plugin,
@@ -20,9 +22,9 @@
               'options' : {'limit' : 10}
             });
           },
-          totalCount: function(crmApi,$route) {
+          totalCount: function(crmApi, $route) {
 
-            var plugin = ((typeof $route.current.params.plugin != 'undefined' && $route.current.params.plugin !== null)? $route.current.params.plugin : 'xero');
+            var plugin = ('plugin' in $route.current.params)? $route.current.params.plugin: 'xero';
 
             return crmApi('AccountContact', 'getcount', {
               plugin: plugin,
@@ -44,7 +46,7 @@
     var ts = $scope.ts = CRM.ts('accountsync');
     var hs = $scope.hs = crmUiHelp({file: 'CRM/accountsync/EditCtrl'}); // See: templates/CRM/accountsync/EditCtrl.hlp
 
-    var plugin = ((typeof $routeParams.plugin != 'undefined' && $routeParams.plugin !== null)? $routeParams.plugin : 'xero');
+    var plugin = ('plugin' in $routeParams)? $routeParams.plugin: 'xero';
 
     // We have accountContact available in JS. We also want to reference it in HTML.
     $scope.accountContacts = suggestions.values;
