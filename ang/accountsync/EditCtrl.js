@@ -53,6 +53,7 @@
     $scope.totalCount = totalCount.result;
 
       $scope.save = function save(accountContact) {
+
         accountContact['accounts_data']['civicrm_formatted']['contact_type'] = 'Individual';
         switch (accountContact['suggestion']) {
           case 'do_not_sync':
@@ -87,6 +88,36 @@
               contactCreateParams['organization_name'] = contactCreateParams['display_name'];
             }
             contactCreateParams['api.AccountContact.create'] = {'id' : accountContact['id']};
+
+            //bug fix: in some CiviCRM versions (like 4.7.x) we can only chain api call to create phone, address and email while creating a new contact.
+            var address_fields_map = ["street_address","city","postal_code"];
+            var address_fields_to_create = {};
+
+
+            for (var index in address_fields_map){
+                  if(address_fields_map[index] in  contactCreateParams){
+                    address_fields_to_create[address_fields_map[index]] = contactCreateParams[address_fields_map[index]];
+
+                    delete contactCreateParams[address_fields_map[index]];
+                  }
+            }
+
+            if( Object.keys(address_fields_to_create).length > 0){
+              address_fields_to_create["location_type_id"] = "Home";
+              contactCreateParams["api.Address.create"] = address_fields_to_create;
+            }
+
+            if( "phone" in contactCreateParams){
+              contactCreateParams["api.Phone.create"] = {"phone":contactCreateParams["phone"]};
+              delete contactCreateParams["phone"];
+            }
+
+            if( "email" in contactCreateParams){
+              contactCreateParams["api.Email.create"] = {"email":contactCreateParams["email"]};
+              delete contactCreateParams["email"];
+            }
+
+
             var success = crmStatus(
               {start: ts('Saving...'), success: ts('Saved')},
                 crmApi('Contact', 'create', contactCreateParams)

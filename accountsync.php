@@ -160,13 +160,12 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
         _accountsync_create_account_contact($contactID, in_array($objectName, $createEntities), $connector_id);
       }
     }
-
     if (in_array($objectName, $invoiceEntities)) {
       $contribution_id = ($objectName == 'LineItem') ? (is_array($objectRef) ? $objectRef['contribution_id'] : $objectRef->contribution_id) : $objectRef->id;
       if (isBeforeDayZero($objectName, $objectRef, $contribution_id, $invoiceDayZero)) {
         return;
       }
-      if (in_array($objectRef->payment_processor, $skipInvoiceEntities)) {
+      if ($objectRef->payment_processor && in_array($objectRef->payment_processor, $skipInvoiceEntities)) {
         return;
       }
       //Don't create account invoice for zero contribution.
@@ -344,7 +343,7 @@ function _accountsync_get_invoice_create_entities($connector_id) {
  *
  * @throws \CiviCRM_API3_Exception
  */
-function _accountsync_get_skip_invoice_create_entities($connector_id) {
+function _accountsync_get_skip_invoice_create_entities($connector_id = 0) {
   $entities = _accountsync_get_entity_action_settings($connector_id);
   $skipEntities = CRM_Utils_Array::value('account_sync_skip_inv_by_pymt_processor', $entities, array());
   return $skipEntities;
