@@ -265,7 +265,7 @@ class CRM_Accountsync_DAO_AccountInvoice extends CRM_Core_DAO
     if (!(self::$_fieldKeys)) {
       self::$_fieldKeys = array(
         'id' => 'id',
-        'account_status_id' => 'account_status_id',
+        'accounts_status_id' => 'accounts_status_id',
         'contribution_id' => 'contribution_id',
         'accounts_invoice_id' => 'accounts_invoice_id',
         'last_sync_date' => 'last_sync_date',
