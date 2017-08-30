@@ -168,9 +168,26 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
       if ($objectRef->payment_processor && in_array($objectRef->payment_processor, $skipInvoiceEntities)) {
         return;
       }
-
+      $pushEnabledStatuses = Civi::settings()->get('account_sync_push_contribution_status');
       //Don't create account invoice for zero contribution.
-      if (!floatval($objectRef->total_amount)) {
+      //Skip contribution with status not enabled in settings.
+      $contriValues = array();
+      $returnValues = array('contribution_status_id', 'total_amount');
+      foreach ($returnValues as $key => $val) {
+        if (!empty($objectRef->$val)) {
+          $contriValues[$val] = $objectRef->$val;
+          unset($returnValues[$key]);
+        }
+      }
+      //Get from api if not present in $objectRef.
+      if (!empty($returnValues)) {
+        $apiValues = civicrm_api3('Contribution', 'getsingle', array(
+          'id' => $contribution_id,
+          'return' => $returnValues,
+        ));
+        $contriValues = array_merge($contriValues, $apiValues);
+      }
+      if (empty(floatval($contriValues['total_amount'])) || !in_array($contriValues['contribution_status_id'], $pushEnabledStatuses)) {
         continue;
       }
       // we won't do updates as the invoices get 'locked' in the accounts system
@@ -347,6 +364,10 @@ function _accountsync_get_invoice_create_entities($connector_id) {
 function _accountsync_get_skip_invoice_create_entities($connector_id = 0) {
   $entities = _accountsync_get_entity_action_settings($connector_id);
   $skipEntities = CRM_Utils_Array::value('account_sync_skip_inv_by_pymt_processor', $entities, array());
+  if ($skipEntities === array('')) {
+    // There is some minor weirdness around the settings format sometimes. Handle.
+    return array();
+  }
   return $skipEntities;
 }
 
@@ -578,7 +599,11 @@ function _accountsync_get_enabled_plugins() {
  *   Otherwise this will be 0.
  */
 function _accountsync_create_account_contact($contactID, $createNew, $connector_id) {
-  $accountContact = array('contact_id' => $contactID);
+  $accountContact = array(
+    'contact_id' => $contactID,
+    // Do not rollback on fail.
+    'is_transactional' => FALSE,
+  );
   foreach (_accountsync_get_enabled_plugins() as $plugin) {
     $accountContact['plugin'] = $plugin;
     $accountContact['connector_id'] = $connector_id;
@@ -627,7 +652,11 @@ function accountsync_civicrm_angularModules(&$angularModules) {
  *   Otherwise this will be 0.
  */
 function _accountsync_create_account_invoice($contributionID, $createNew, $connector_id) {
-  $accountInvoice = array('contribution_id' => $contributionID, 'accounts_needs_update' => 1);
+  $accountInvoice = array(
+    'contribution_id' => $contributionID, 'accounts_needs_update' => 1,
+    // Do not rollback on fail.
+    'is_transactional' => FALSE,
+  );
   foreach(_accountsync_get_enabled_plugins() as $plugin) {
     unset($accountInvoice['id']); // Ensure id is not set in case of multiple plugins
 
