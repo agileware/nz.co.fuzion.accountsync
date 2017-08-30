@@ -187,7 +187,7 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
         ));
         $contriValues = array_merge($contriValues, $apiValues);
       }
-      if (empty(floatval($contriValues['total_amount'])) || !in_array($contriValues['contribution_status_id'], $pushEnabledStatuses)) {
+      if (!floatval($contriValues['total_amount']) || !in_array($contriValues['contribution_status_id'], $pushEnabledStatuses)) {
         continue;
       }
       // we won't do updates as the invoices get 'locked' in the accounts system
