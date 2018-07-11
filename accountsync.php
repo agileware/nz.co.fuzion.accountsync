@@ -172,7 +172,7 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
       //Don't create account invoice for zero contribution.
       //Skip contribution with status not enabled in settings.
       $contriValues = array();
-      $returnValues = array('contribution_status_id', 'total_amount');
+      $returnValues = array('contribution_status_id', 'total_amount', 'is_test');
       foreach ($returnValues as $key => $val) {
         if (!empty($objectRef->$val)) {
           $contriValues[$val] = $objectRef->$val;
@@ -187,7 +187,7 @@ function accountsync_civicrm_post($op, $objectName, $objectId, &$objectRef) {
         ));
         $contriValues = array_merge($contriValues, $apiValues);
       }
-      if (!floatval($contriValues['total_amount']) || !in_array($contriValues['contribution_status_id'], $pushEnabledStatuses)) {
+      if ($contriValues['is_test'] || empty(floatval($contriValues['total_amount'])) || !in_array($contriValues['contribution_status_id'], $pushEnabledStatuses)) {
         continue;
       }
       // we won't do updates as the invoices get 'locked' in the accounts system
@@ -604,6 +604,21 @@ function _accountsync_create_account_contact($contactID, $createNew, $connector_
     // Do not rollback on fail.
     'is_transactional' => FALSE,
   );
+
+  try {
+    $contact = civicrm_api3("contact", "getsingle", array(
+        "id"     => $contactID,
+        "return" => array("id", "contact_is_deleted"),
+    ));
+    if ($contact["contact_is_deleted"]) {
+        // Contact is deleted, Skip the sync.
+        return;
+    }
+  } catch(CiviCRM_API3_Exception $e) {
+    // Contact not found, Skip the sync.
+    return;
+  }
+
   foreach (_accountsync_get_enabled_plugins() as $plugin) {
     $accountContact['plugin'] = $plugin;
     $accountContact['connector_id'] = $connector_id;
