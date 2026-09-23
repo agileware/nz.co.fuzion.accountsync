@@ -311,23 +311,39 @@ class PostHookChangeDetectionTest extends TestCase implements HeadlessInterface,
   }
 
   /**
-   * Regression test for a bug flagged in review: the pre-save snapshot
-   * used to be stored in a single slot keyed by purpose+entity+id, so a
-   * reentrant save of the same entity id (a nested save starting, and
-   * finishing, while an outer save's own hook_civicrm_post is still
-   * pending) would let the second hook_civicrm_pre capture silently
-   * overwrite the first - corrupting the diff baseline whichever save's
-   * hook_civicrm_post reads it second. Fixed by pushing each snapshot onto
-   * a per-id stack instead, so each read pops its own matching entry.
-   *
-   * This checks the actual stack depth directly, rather than only the
-   * public pass/fail outcome of _accountsync_entity_has_relevant_change():
-   * because that function fails "open" when no snapshot is found, the
-   * old, buggy single-slot behaviour and the new stack-based behaviour can
-   * both end up returning the same (safe) answer for many inputs, so the
-   * pass/fail outcome alone doesn't reliably distinguish them.
+   * Regression test for a bug flagged in review: an unrecognised $purpose
+   * used to fall through to indexing a missing array key, which is a
+   * silent NULL (with only a PHP warning) in production but a hard failure
+   * under PHPUnit's convertWarningsToExceptions. Fixed by validating
+   * $purpose explicitly and throwing a clear, immediately-attributed
+   * exception - every real call site only ever passes a literal 'contact'
+   * or 'invoice', so this can only fire on a future typo, and should fail
+   * loudly and obviously when it does rather than silently misbehaving.
    */
-  public function testCapturedSnapshotsAreStackedNotOverwritten(): void {
+  public function testGetSyncRelevantFieldsThrowsOnUnrecognisedPurpose(): void {
+    $this->expectException(\InvalidArgumentException::class);
+    _accountsync_get_sync_relevant_fields('not-a-real-purpose');
+  }
+
+  /**
+   * Regression test for a bug flagged in review: the pre-save snapshot
+   * used to be stored in a static registry keyed by purpose+entity+id.
+   * Two overlapping saves of the same entity id (e.g. a nested save
+   * starting and finishing while an outer save's own hook_civicrm_post is
+   * still pending) would then either clobber each other's snapshot (the
+   * original single-slot version) or, once fixed with a stack, silently
+   * assume the pre/post pairs are always strictly nested (LIFO) - which
+   * isn't guaranteed and was flagged again in a later review pass.
+   *
+   * Fixed by stashing the snapshot directly on the same $params array
+   * hook_civicrm_pre() received, which CiviCRM threads through unchanged to
+   * hook_civicrm_post()'s 5th argument for every entity accountsync tracks.
+   * That leaves no shared state at all to clobber or mis-pair: this test
+   * captures into two independent $params arrays for the same entity id and
+   * confirms each reads back its own value regardless of the other, with no
+   * ordering assumption involved.
+   */
+  public function testCaptureAndCheckAreScopedToTheirOwnParamsArrayNotSharedState(): void {
     $contactID = $this->individualCreate();
     $email = $this->callAPISuccess('Email', 'create', [
       'contact_id' => $contactID,
@@ -336,16 +352,61 @@ class PostHookChangeDetectionTest extends TestCase implements HeadlessInterface,
       'is_primary' => 1,
     ]);
     $emailID = (int) $email['id'];
-    $ignoredParams = [];
 
-    _accountsync_capture_pre_save_values('contact', 'edit', 'Email', $emailID, $ignoredParams);
-    _accountsync_capture_pre_save_values('contact', 'edit', 'Email', $emailID, $ignoredParams);
+    // Two "saves" of the same email id capture into their OWN $params
+    // array, exactly as two real overlapping saves each get their own.
+    $paramsA = [];
+    _accountsync_capture_pre_save_values('contact', 'edit', 'Email', $emailID, $paramsA);
+    $paramsB = [];
+    _accountsync_capture_pre_save_values('contact', 'edit', 'Email', $emailID, $paramsB);
 
-    $this->assertCount(
-      2,
-      \Civi::$statics['accountsync_pre_save_values']['contact']['Email'][$emailID],
-      'A second capture for the same entity id must be pushed alongside the first, not overwrite it.'
-    );
+    $this->assertEquals('first@example.org', $paramsA['_accountsync_before']['contact']['email']);
+    $this->assertEquals('first@example.org', $paramsB['_accountsync_before']['contact']['email']);
+
+    $this->callAPISuccess('Email', 'create', [
+      'id' => $emailID,
+      'contact_id' => $contactID,
+      'email' => 'second@example.org',
+    ]);
+
+    // Reading back via either $params array reports the same (real)
+    // change, in whichever order they're checked - neither read consumes
+    // or disturbs the other's snapshot.
+    $this->assertTrue(_accountsync_entity_has_relevant_change('contact', 'edit', 'Email', $emailID, $paramsB));
+    $this->assertTrue(_accountsync_entity_has_relevant_change('contact', 'edit', 'Email', $emailID, $paramsA));
+  }
+
+  /**
+   * Regression test for a bug flagged in review: hook_civicrm_pre() used to
+   * unconditionally capture a "before" snapshot even when
+   * accountsync_civicrm_post() was about to bail out before ever reading it
+   * (the PR #62 case: an accounts provider creating a Contribution in
+   * CiviCRM). With the snapshot stored in a static registry, that capture
+   * was never cleaned up - a leak for the lifetime of the request. Now that
+   * the snapshot lives on $params itself, a stray capture can no longer
+   * leak (it dies with that array), but the capture is still pointless
+   * work, so accountsync_civicrm_pre() skips it outright when it can tell
+   * accountsync_civicrm_post() won't read it.
+   */
+  public function testPreHookSkipsCaptureWhenPostHookIsSuppressed(): void {
+    $contactID = $this->individualCreate();
+    $email = $this->callAPISuccess('Email', 'create', [
+      'contact_id' => $contactID,
+      'email' => 'first@example.org',
+      'location_type_id' => 1,
+      'is_primary' => 1,
+    ]);
+
+    \Civi::$statics['data.accountsync.createcontribution']['createnew'] = FALSE;
+    try {
+      $params = ['id' => $email['id'], 'contact_id' => $contactID, 'email' => 'second@example.org'];
+      accountsync_civicrm_pre('edit', 'Email', $email['id'], $params);
+    }
+    finally {
+      unset(\Civi::$statics['data.accountsync.createcontribution']);
+    }
+
+    $this->assertArrayNotHasKey('_accountsync_before', $params);
   }
 
   /**

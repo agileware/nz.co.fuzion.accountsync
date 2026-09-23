@@ -37,8 +37,14 @@ function accountsync_civicrm_enable() {
  * @param string $objectName
  * @param int $objectId
  * @param object $objectRef
+ * @param array|null $params
+ *   The same $params array hook_civicrm_pre() received for this save (CiviCRM
+ *   passes it through unchanged as the 5th hook_civicrm_post argument for
+ *   every entity accountsync tracks). Used to read back the pre-save
+ *   snapshot _accountsync_capture_pre_save_values() stashed on it - see that
+ *   function for why.
  */
-function accountsync_civicrm_post(string $op, string $objectName, $objectId, &$objectRef) {
+function accountsync_civicrm_post(string $op, string $objectName, $objectId, &$objectRef, $params = NULL) {
   $whitelistOps = ['update', 'create', 'restore', 'edit'];
 
   if (!in_array($op, $whitelistOps)) {
@@ -50,7 +56,7 @@ function accountsync_civicrm_post(string $op, string $objectName, $objectId, &$o
   //   which will cause it to create a new AccountsInvoice record before the code has chance to update an existing AccountsInvoice record
   //   if one already exists but does not yet contain a CiviCRM contribution ID.
   // By setting this flag to FALSE we can prevent this hook from triggering the AccountsInvoice create action.
-  if (isset(\Civi::$statics['data.accountsync.createcontribution']['createnew']) && (\Civi::$statics['data.accountsync.createcontribution']['createnew'] === FALSE)) {
+  if (_accountsync_is_post_hook_suppressed()) {
     return;
   }
 
@@ -61,12 +67,12 @@ function accountsync_civicrm_post(string $op, string $objectName, $objectId, &$o
   // scheduled job). Without this check we would flag the contact for
   // accounts sync every time, regardless of whether there is anything new
   // to push.
-  $hasRelevantChange = _accountsync_entity_has_relevant_change('contact', $op, $objectName, $objectId);
+  $hasRelevantChange = _accountsync_entity_has_relevant_change('contact', $op, $objectName, $objectId, $params);
   // Same "did anything actually change" problem, but for the separate
   // invoice-creation trigger below - a no-op resave of a Contribution
   // (e.g. by an unrelated scheduled job) would otherwise re-queue its
   // invoice for push every time, indistinguishably from a real edit.
-  $hasInvoiceRelevantChange = _accountsync_entity_has_relevant_change('invoice', $op, $objectName, $objectId);
+  $hasInvoiceRelevantChange = _accountsync_entity_has_relevant_change('invoice', $op, $objectName, $objectId, $params);
 
   foreach ($connectors as $connector_id) {
     $createEntities = _accountsync_get_contact_create_entities($connector_id);
@@ -440,8 +446,29 @@ function accountsync_civicrm_pre($op, $objectName, $id, &$params) {
   $objectName = _accountsync_map_object_name_to_entity($objectName);
   _accountsync_handle_contact_deletion($op, $objectName, $id, $params);
   _accountsync_handle_contribution_deletion($op, $objectName, $id, $params);
+  if (_accountsync_is_post_hook_suppressed()) {
+    // accountsync_civicrm_post() is about to bail out for this save (see
+    // PR #62) before ever reading a snapshot captured here - skip the
+    // pointless "before" lookup rather than doing work nothing will use.
+    return;
+  }
   _accountsync_capture_pre_save_values('contact', $op, $objectName, $id, $params);
   _accountsync_capture_pre_save_values('invoice', $op, $objectName, $id, $params);
+}
+
+/**
+ * Is accountsync_civicrm_post() currently suppressed for the "accounts
+ * provider created a Contribution" case (see PR #62's
+ * data.accountsync.createcontribution static)? Shared by
+ * accountsync_civicrm_pre() and accountsync_civicrm_post() so the two stay
+ * in sync: hook_civicrm_pre() must never do work whose only consumer is a
+ * hook_civicrm_post() call that's about to bail out before reading it.
+ *
+ * @return bool
+ */
+function _accountsync_is_post_hook_suppressed(): bool {
+  return isset(\Civi::$statics['data.accountsync.createcontribution']['createnew'])
+    && (\Civi::$statics['data.accountsync.createcontribution']['createnew'] === FALSE);
 }
 
 /**
@@ -555,6 +582,14 @@ function _accountsync_map_object_name_to_entity($objectName) {
  *   'contact' or 'invoice'.
  *
  * @return array
+ *
+ * @throws \InvalidArgumentException
+ *   If $purpose isn't a recognised value. Every call site in this file
+ *   passes a literal 'contact' or 'invoice', so this can only fire if a
+ *   future change introduces a typo - an immediate, clearly-attributed
+ *   exception here is far easier to diagnose than the "trying to access
+ *   array offset on null" warning that indexing a missing purpose key
+ *   would otherwise produce a level down in the caller.
  */
 function _accountsync_get_sync_relevant_fields(string $purpose): array {
   $fields = [
@@ -578,6 +613,9 @@ function _accountsync_get_sync_relevant_fields(string $purpose): array {
       ],
     ],
   ];
+  if (!isset($fields[$purpose])) {
+    throw new \InvalidArgumentException("Unrecognised accountsync sync purpose '$purpose' - expected 'contact' or 'invoice'.");
+  }
   return $fields[$purpose];
 }
 
@@ -619,12 +657,16 @@ function _accountsync_entity_triggers_sync(string $purpose, string $objectName):
  * (see _accountsync_get_sync_relevant_fields()) - 'create'/'restore' are
  * always a real change, so there's nothing to capture for them.
  *
- * Snapshots are pushed onto a per-purpose-entity-id stack rather than
- * stored in a single slot, so a reentrant save of the same entity id (a
- * second save starting, and finishing, before the first save's
- * hook_civicrm_post has fired) cannot clobber the pending snapshot: each
- * _accountsync_entity_has_relevant_change() call pops its own matching
- * entry.
+ * The snapshot is stashed directly on $params - the same array
+ * hook_civicrm_pre() received here - rather than in a static registry keyed
+ * by entity+id. CiviCRM passes this exact $params array through unchanged
+ * to hook_civicrm_post() as its 5th argument, for every entity accountsync
+ * tracks (verified against CRM_Contact_BAO_Contact::create(),
+ * CRM_Contribute_BAO_Contribution::create() and CRM_Core_DAO::writeRecord(),
+ * which Email/Phone/Address all funnel through) - so this snapshot is
+ * inherently scoped to this one save, with no cross-save state to leak if
+ * hook_civicrm_post() never reads it, and no assumption about the relative
+ * order in which concurrent saves of the same entity id are processed.
  *
  * @param string $purpose
  *   'contact' or 'invoice'.
@@ -647,7 +689,7 @@ function _accountsync_capture_pre_save_values(string $purpose, $op, $objectName,
       'select' => $relevantFields,
       'where' => [['id', '=', $id]],
     ])->single();
-    \Civi::$statics['accountsync_pre_save_values'][$purpose][$objectName][$id][] = $before;
+    $params['_accountsync_before'][$purpose] = $before;
   }
   catch (CRM_Core_Exception $e) {
     // No snapshot means _accountsync_entity_has_relevant_change() will fail
@@ -678,10 +720,13 @@ function _accountsync_capture_pre_save_values(string $purpose, $op, $objectName,
  * @param string $op
  * @param string $objectName
  * @param int $objectId
+ * @param array|null $params
+ *   hook_civicrm_post()'s own 5th argument - the same array
+ *   _accountsync_capture_pre_save_values() stashed the snapshot on.
  *
  * @return bool
  */
-function _accountsync_entity_has_relevant_change(string $purpose, $op, $objectName, $objectId): bool {
+function _accountsync_entity_has_relevant_change(string $purpose, $op, $objectName, $objectId, $params = NULL): bool {
   if (!in_array($op, ['edit', 'update'], TRUE)) {
     return TRUE;
   }
@@ -689,16 +734,9 @@ function _accountsync_entity_has_relevant_change(string $purpose, $op, $objectNa
   if ($relevantFields === NULL) {
     return TRUE;
   }
-  $stack = \Civi::$statics['accountsync_pre_save_values'][$purpose][$objectName][$objectId] ?? [];
-  if (empty($stack)) {
+  $before = $params['_accountsync_before'][$purpose] ?? NULL;
+  if ($before === NULL) {
     return TRUE;
-  }
-  $before = array_pop($stack);
-  if (empty($stack)) {
-    unset(\Civi::$statics['accountsync_pre_save_values'][$purpose][$objectName][$objectId]);
-  }
-  else {
-    \Civi::$statics['accountsync_pre_save_values'][$purpose][$objectName][$objectId] = $stack;
   }
   try {
     $after = civicrm_api4($objectName, 'get', [
